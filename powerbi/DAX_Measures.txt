@@ -1,0 +1,47 @@
+// ============================================================
+// AI Workforce Guardian — Power BI DAX Measures
+// Copy each formula into a New Measure (Modeling → New Measure)
+// 
+// IMPORTANT: Replace "HR_Data" with your table name.
+// After CSV import, right-click table → Rename to "HR_Data"
+// (Default name is often: WA_Fn-UseC_-HR-Employee-Attrition)
+// ============================================================
+
+// ---- KPI Measures ----
+
+Total Employees = COUNTROWS(HR_Data)
+
+Attrition Count = CALCULATE(COUNTROWS(HR_Data), HR_Data[Attrition] = "Yes")
+
+Attrition Rate % = DIVIDE([Attrition Count], [Total Employees], 0) * 100
+
+Avg Monthly Income = AVERAGE(HR_Data[MonthlyIncome])
+
+Employees Who Left = CALCULATE(COUNTROWS(HR_Data), HR_Data[Attrition] = "Yes")
+
+Employees Retained = CALCULATE(COUNTROWS(HR_Data), HR_Data[Attrition] = "No")
+
+Avg Years at Company = AVERAGE(HR_Data[YearsAtCompany])
+
+// ---- For Charts ----
+
+// Attrition by Department (use in visual: Department on axis, this measure as value)
+Attrition by Dept = CALCULATE([Attrition Count])
+
+// Attrition by Job Role
+Attrition by Role = CALCULATE([Attrition Count])
+
+// Employee Count (for Age distribution, OverTime breakdown)
+Employee Count = COUNTROWS(HR_Data)
+
+// ---- Conditional Formatting ----
+
+// Use Attrition Rate % with conditional formatting: Red if > 15, Yellow 10-15, Green < 10
+Attrition Rate Color = 
+VAR Rate = [Attrition Rate %]
+RETURN
+SWITCH(TRUE,
+    Rate >= 15, "High",
+    Rate >= 10, "Medium",
+    "Low"
+)

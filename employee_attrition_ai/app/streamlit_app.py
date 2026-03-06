@@ -211,28 +211,121 @@ def get_risk_level(probability: float) -> tuple:
         return "High Risk", pct
 
 
-def generate_ai_explanation(form_data: dict, risk_pct: float) -> str:
-    """Generate AI explanation for the attrition risk prediction."""
-    reasons = []
-    if form_data.get("OverTime") == "Yes":
-        reasons.append("high overtime")
-    if form_data.get("MonthlyIncome", 0) < 5000:
-        reasons.append("low MonthlyIncome")
-    if form_data.get("JobSatisfaction", 3) <= 2:
-        reasons.append("low JobSatisfaction")
-    if form_data.get("YearsAtCompany", 5) < 3:
-        reasons.append("few YearsAtCompany")
-    if form_data.get("WorkLifeBalance", 3) <= 2:
-        reasons.append("poor WorkLifeBalance")
-    if form_data.get("Age", 36) < 35 and risk_pct > 40:
-        reasons.append("early-career stage")
+def _safe_val(v, default):
+    """Handle numpy/nan values."""
+    if v is None or (hasattr(v, "__float__") and np.isnan(v)):
+        return default
+    return v
+
+
+def generate_ai_explanation(emp_row: dict, df: pd.DataFrame, risk_pct: float) -> str:
+    """
+    Generate personalized AI explanation for each employee based on their actual profile.
+    Uses department/company averages for context; varies phrasing per employee.
+    """
+    # Compute department and company benchmarks
+    dept = str(emp_row.get("Department", ""))
+    dept_mask = df["Department"] == dept if dept else pd.Series([False] * len(df))
+    dept_df = df[dept_mask] if dept_mask.any() else df
     
-    if reasons:
-        return f"High attrition risk due to {', '.join(reasons)}."
-    elif risk_pct > 50:
-        return "Elevated attrition risk based on combined factors in the employee profile."
+    avg_income = float(df["MonthlyIncome"].median())
+    dept_income = float(dept_df["MonthlyIncome"].median()) if len(dept_df) > 0 else avg_income
+    
+    income = int(_safe_val(emp_row.get("MonthlyIncome"), 0))
+    job_sat = int(_safe_val(emp_row.get("JobSatisfaction"), 3))
+    wlb = int(_safe_val(emp_row.get("WorkLifeBalance"), 3))
+    years = int(_safe_val(emp_row.get("YearsAtCompany"), 5))
+    years_since_promo = int(_safe_val(emp_row.get("YearsSinceLastPromotion"), 2))
+    overtime = str(emp_row.get("OverTime", "No"))
+    age = int(_safe_val(emp_row.get("Age"), 36))
+    env_sat = int(_safe_val(emp_row.get("EnvironmentSatisfaction"), 3))
+    rel_sat = int(_safe_val(emp_row.get("RelationshipSatisfaction"), 3))
+    job_inv = int(_safe_val(emp_row.get("JobInvolvement"), 3))
+    dist_home = int(_safe_val(emp_row.get("DistanceFromHome"), 10))
+    num_companies = int(_safe_val(emp_row.get("NumCompaniesWorked"), 2))
+    training = int(_safe_val(emp_row.get("TrainingTimesLastYear"), 2))
+    
+    reasons = []
+    
+    # Overtime - vary phrasing
+    if overtime == "Yes":
+        if income < dept_income * 0.8:
+            reasons.append("works overtime while earning below department median")
+        else:
+            reasons.append("frequent overtime may indicate burnout or overload")
+    
+    # Income - contextual
+    if income < dept_income * 0.7:
+        reasons.append(f"salary (${income:,}) is well below department median (${dept_income:,.0f})")
+    elif income < avg_income:
+        reasons.append("compensation slightly below company average")
+    
+    # Job satisfaction - nuanced
+    if job_sat <= 1:
+        reasons.append("very low job satisfaction (1)")
+    elif job_sat == 2:
+        reasons.append("below-average job satisfaction (2)")
+    
+    # Work-life balance
+    if wlb <= 1:
+        reasons.append("poor work-life balance")
+    elif wlb == 2 and overtime == "Yes":
+        reasons.append("work-life balance strained by overtime")
+    
+    # Tenure
+    if years < 2:
+        reasons.append("less than 2 years tenure—early departure risk")
+    elif years < 4 and risk_pct > 40:
+        reasons.append("mid-tenure (3–4 years) with elevated risk indicators")
+    
+    # Promotion stagnation
+    if years_since_promo >= 5 and risk_pct > 35:
+        reasons.append("no promotion in 5+ years—career stagnation concern")
+    
+    # Age/career stage
+    if age < 30 and num_companies > 3:
+        reasons.append("early-career with high job-hopping history")
+    elif age >= 45 and years < 3:
+        reasons.append("experienced hire with short tenure—integration risk")
+    
+    # Environment & relationships
+    if env_sat <= 2 and job_sat <= 2:
+        reasons.append("low environment and job satisfaction")
+    elif rel_sat <= 1:
+        reasons.append("low relationship satisfaction with colleagues/manager")
+    
+    # Distance and engagement
+    if dist_home > 15:
+        reasons.append("long commute may affect retention")
+    if job_inv <= 2:
+        reasons.append("low job involvement")
+    if training == 0 and years >= 2:
+        reasons.append("no training in past year—development concern")
+    
+    # Build personalized message
+    if risk_pct >= 60:
+        if reasons:
+            return f"This employee shows high attrition risk. Key concerns: {'; '.join(reasons)}."
+        return "High attrition risk from multiple cumulative factors in the profile."
+    elif risk_pct >= 30:
+        if reasons:
+            return f"Moderate risk profile. Factors to watch: {'; '.join(reasons)}."
+        return "Moderate risk—no single strong driver, but combined factors warrant attention."
     else:
-        return "Moderate risk profile. Key retention factors appear favorable."
+        positives = []
+        if job_sat >= 4:
+            positives.append("strong job satisfaction")
+        if wlb >= 3:
+            positives.append("good work-life balance")
+        if years >= 5:
+            positives.append("solid tenure")
+        if income >= dept_income:
+            positives.append("competitive compensation")
+        if overtime == "No":
+            positives.append("no overtime burden")
+        if positives:
+            return f"Low risk profile. Retention strengths: {', '.join(positives)}."
+        return "Low attrition risk. Profile indicates stable retention factors."
 
 
 def generate_hr_recommendations(form_data: dict, risk_pct: float) -> list:
@@ -269,6 +362,210 @@ def apply_dark_theme(fig):
         yaxis=dict(gridcolor="#334155", linecolor="#475569", zerolinecolor="#334155"),
     )
     return fig
+
+
+def _report_charts(emp_row, df: pd.DataFrame, risk_pct: float, display_name: str):
+    """Generate charts for the HR report: Employee vs benchmarks, Risk gauge, Satisfaction radar."""
+    dept = emp_row.get("Department", "")
+    dept_df = df[df["Department"] == dept] if dept else df
+    
+    # Benchmark values
+    emp_income = int(emp_row.get("MonthlyIncome", 0))
+    emp_jsat = int(emp_row.get("JobSatisfaction", 3))
+    emp_esat = int(emp_row.get("EnvironmentSatisfaction", 3))
+    emp_rsat = int(emp_row.get("RelationshipSatisfaction", 3))
+    emp_wlb = int(emp_row.get("WorkLifeBalance", 3))
+    emp_jinv = int(emp_row.get("JobInvolvement", 3))
+    
+    dept_income = dept_df["MonthlyIncome"].median() if len(dept_df) > 0 else df["MonthlyIncome"].median()
+    comp_income = df["MonthlyIncome"].median()
+    
+    # Chart 1: Employee vs Department/Company - Satisfaction metrics (1-4 scale) + Income (normalized to 0-4)
+    metrics = ["Job Satisfaction", "Environment Sat.", "Relationship Sat.", "Work-Life Balance", "Job Involvement"]
+    emp_vals = [emp_jsat, emp_esat, emp_rsat, emp_wlb, emp_jinv]
+    dept_vals = [
+        dept_df["JobSatisfaction"].mean() if len(dept_df) > 0 else df["JobSatisfaction"].mean(),
+        dept_df["EnvironmentSatisfaction"].mean() if len(dept_df) > 0 else df["EnvironmentSatisfaction"].mean(),
+        dept_df["RelationshipSatisfaction"].mean() if len(dept_df) > 0 else df["RelationshipSatisfaction"].mean(),
+        dept_df["WorkLifeBalance"].mean() if len(dept_df) > 0 else df["WorkLifeBalance"].mean(),
+        dept_df["JobInvolvement"].mean() if len(dept_df) > 0 else df["JobInvolvement"].mean(),
+    ]
+    
+    fig1 = go.Figure()
+    fig1.add_trace(go.Bar(name="Employee", x=metrics, y=emp_vals, marker_color="#e50914"))
+    fig1.add_trace(go.Bar(name="Dept/Company Avg", x=metrics, y=[round(v, 1) for v in dept_vals], marker_color="#3b82f6"))
+    fig1.update_layout(
+        title=f"{display_name} — Satisfaction vs Department Average",
+        barmode="group",
+        height=320,
+        margin=dict(l=20, r=20, t=50, b=80),
+        yaxis=dict(range=[0, 4.5], title="Score (1-4)"),
+    )
+    fig1 = apply_dark_theme(fig1)
+    
+    # Chart 2: Income comparison
+    fig2 = go.Figure(go.Bar(
+        x=["Employee", "Dept Median", "Company Median"],
+        y=[emp_income, dept_income, comp_income],
+        marker_color=["#e50914", "#3b82f6", "#22c55e"],
+        text=[f"${emp_income:,}", f"${dept_income:,.0f}", f"${comp_income:,.0f}"],
+        textposition="outside",
+    ))
+    fig2.update_layout(
+        title="Monthly Income Comparison",
+        height=280,
+        margin=dict(l=20, r=20, t=50, b=20),
+        showlegend=False,
+    )
+    fig2 = apply_dark_theme(fig2)
+    
+    # Chart 3: Risk gauge
+    risk_color = "#22c55e" if risk_pct < 30 else ("#eab308" if risk_pct < 60 else "#e50914")
+    fig3 = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=risk_pct,
+        number={"suffix": "%", "font": {"size": 32}},
+        gauge={
+            "axis": {"range": [0, 100]},
+            "bar": {"color": risk_color},
+            "steps": [
+                {"range": [0, 30], "color": "rgba(34, 197, 94, 0.3)"},
+                {"range": [30, 60], "color": "rgba(234, 179, 8, 0.3)"},
+                {"range": [60, 100], "color": "rgba(229, 9, 20, 0.3)"},
+            ],
+            "threshold": {"line": {"color": risk_color, "width": 4}, "value": risk_pct},
+        },
+        title={"text": "Attrition Risk %"},
+    ))
+    fig3.update_layout(height=260, margin=dict(l=20, r=20, t=50, b=20))
+    fig3 = apply_dark_theme(fig3)
+    
+    return fig1, fig2, fig3
+
+
+def _build_report_html(emp_row, df: pd.DataFrame, risk_pct: float, risk_level: str,
+                       explanation: str, recommendations: list, display_name: str) -> str:
+    """Build full HTML report for download."""
+    fig1, fig2, fig3 = _report_charts(emp_row, df, risk_pct, display_name)
+    chart1_html = fig1.to_html(full_html=False, include_plotlyjs="cdn")
+    chart2_html = fig2.to_html(full_html=False, include_plotlyjs=False)
+    chart3_html = fig3.to_html(full_html=False, include_plotlyjs=False)
+    
+    sections = [
+        ("Personal & Demographics", ["EmployeeName", "EmployeeNumber", "Age", "Gender", "MaritalStatus", "DistanceFromHome"]),
+        ("Job & Role", ["Department", "JobRole", "JobLevel", "BusinessTravel", "Education", "EducationField"]),
+        ("Compensation", ["MonthlyIncome", "MonthlyRate", "DailyRate", "HourlyRate", "PercentSalaryHike", "StockOptionLevel"]),
+        ("Satisfaction & Engagement", ["JobSatisfaction", "EnvironmentSatisfaction", "RelationshipSatisfaction", "WorkLifeBalance", "JobInvolvement", "PerformanceRating"]),
+        ("Tenure & Experience", ["YearsAtCompany", "YearsInCurrentRole", "YearsSinceLastPromotion", "YearsWithCurrManager", "TotalWorkingYears", "NumCompaniesWorked", "TrainingTimesLastYear"]),
+        ("Work Pattern & Status", ["OverTime", "Attrition"]),
+    ]
+    
+    rows = []
+    for sec_title, cols in sections:
+        valid_cols = [c for c in cols if c in emp_row.index]
+        if valid_cols:
+            rows.append(f'<tr><td colspan="2"><strong>{sec_title}</strong></td></tr>')
+            for col in valid_cols:
+                val = emp_row[col]
+                label = col.replace("_", " ").title()
+                if col in ["MonthlyIncome", "MonthlyRate", "DailyRate", "HourlyRate"]:
+                    val = f"${val:,.0f}" if isinstance(val, (int, float)) else val
+                rows.append(f'<tr><td>{label}</td><td>{val}</td></tr>')
+    
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>HR Report - {display_name}</title>
+<style>
+body {{ font-family: Segoe UI, sans-serif; background: #0f172a; color: #f1f5f9; padding: 2rem; }}
+h1 {{ color: #e50914; }}
+h2 {{ color: #94a3b8; margin-top: 2rem; }}
+table {{ border-collapse: collapse; width: 100%; margin: 1rem 0; }}
+td {{ padding: 0.5rem; border-bottom: 1px solid #334155; }}
+.card {{ background: #1e293b; border-radius: 12px; padding: 1.5rem; margin: 1rem 0; }}
+.risk {{ color: #e50914; font-weight: bold; }}
+.explanation {{ background: #1e293b; padding: 1rem; border-left: 4px solid #e50914; margin: 1rem 0; }}
+ul {{ margin-left: 1.5rem; }}
+</style>
+</head>
+<body>
+<h1>AI Workforce Guardian — Employee HR Report</h1>
+<h2>{display_name}</h2>
+<p><strong>Attrition Risk:</strong> <span class="risk">{risk_pct:.1f}%</span> ({risk_level})</p>
+
+<div class="card"><h3>AI Explanation</h3><p>{explanation}</p></div>
+<div class="card"><h3>HR Recommendations</h3><ul>{''.join(f'<li>{r}</li>' for r in recommendations)}</ul></div>
+
+<h3>Charts</h3>
+<div style="margin: 1rem 0;">{chart1_html}</div>
+<div style="margin: 1rem 0;">{chart2_html}</div>
+<div style="margin: 1rem 0;">{chart3_html}</div>
+
+<h3>Full Employee Details</h3>
+<table><tbody>{''.join(rows)}</tbody></table>
+<p style="color: #94a3b8; font-size: 0.9rem;">Generated by AI Workforce Guardian</p>
+</body>
+</html>"""
+    return html
+
+
+def _render_report_content(emp_row, df, risk_pct, risk_level, explanation, recommendations, display_name):
+    """Render report content: charts, details, and download button."""
+    st.markdown(f"### {display_name} — Full HR Report")
+    risk_class = "risk-high" if risk_pct >= 60 else ("risk-medium" if risk_pct >= 30 else "risk-low")
+    st.markdown(f'**Attrition Risk:** <span class="{risk_class}">{risk_pct:.1f}%</span> ({risk_level})', unsafe_allow_html=True)
+    
+    st.markdown("---")
+    st.markdown("#### AI Explanation")
+    st.info(explanation)
+    st.markdown("#### HR Recommendations")
+    for rec in recommendations:
+        st.markdown(f"- {rec}")
+    
+    st.markdown("---")
+    st.markdown("#### Charts")
+    fig1, fig2, fig3 = _report_charts(emp_row, df, risk_pct, display_name)
+    st.plotly_chart(fig1, use_container_width=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.plotly_chart(fig2, use_container_width=True)
+    with col2:
+        st.plotly_chart(fig3, use_container_width=True)
+    
+    st.markdown("---")
+    st.markdown("#### Employee Details")
+    sections = [
+        ("Personal & Demographics", ["EmployeeName", "EmployeeNumber", "Age", "Gender", "MaritalStatus", "DistanceFromHome"]),
+        ("Job & Role", ["Department", "JobRole", "JobLevel", "BusinessTravel", "Education", "EducationField"]),
+        ("Compensation", ["MonthlyIncome", "MonthlyRate", "DailyRate", "HourlyRate", "PercentSalaryHike", "StockOptionLevel"]),
+        ("Satisfaction & Engagement", ["JobSatisfaction", "EnvironmentSatisfaction", "RelationshipSatisfaction", "WorkLifeBalance", "JobInvolvement", "PerformanceRating"]),
+        ("Tenure & Experience", ["YearsAtCompany", "YearsInCurrentRole", "YearsSinceLastPromotion", "YearsWithCurrManager", "TotalWorkingYears", "NumCompaniesWorked", "TrainingTimesLastYear"]),
+        ("Work Pattern & Status", ["OverTime", "Attrition"]),
+    ]
+    for sec_title, cols in sections:
+        valid_cols = [c for c in cols if c in emp_row.index]
+        if valid_cols:
+            st.markdown(f"**{sec_title}**")
+            for col in valid_cols:
+                val = emp_row[col]
+                label = col.replace("_", " ").title()
+                if col in ["MonthlyIncome", "MonthlyRate", "DailyRate", "HourlyRate"] and isinstance(val, (int, float)):
+                    st.markdown(f"- **{label}:** ${val:,.0f}")
+                else:
+                    st.markdown(f"- **{label}:** {val}")
+            st.markdown("")
+    
+    st.markdown("---")
+    report_html = _build_report_html(emp_row, df, risk_pct, risk_level, explanation, recommendations, display_name)
+    safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in display_name)
+    st.download_button(
+        "📥 Download Report (HTML)",
+        data=report_html,
+        file_name=f"HR_Report_{safe_name}.html",
+        mime="text/html",
+        key=f"btn_download_{safe_name}",
+    )
 
 
 def render_hr_charts(df):
@@ -394,22 +691,24 @@ df = get_cached_data()
 artifacts = load_model_artifacts()
 
 # ============ SIDEBAR - Clean modern navigation (no radio buttons) ============
-nav_options = ["Dashboard", "Dataset Preview", "Train Model", "HR Insights", "Individual Employee Risk Analyzer", "Attrition Data", "Employees At Risk"]
+nav_options = ["Dashboard", "Dataset Preview", "Train Model", "HR Insights", "Individual Employee Risk Analyzer", "Report", "Attrition Data", "Employees At Risk"]
 nav_labels = {
     "Dashboard": "Company Dashboard",
     "Dataset Preview": "Dataset Preview",
     "Train Model": "Train Model",
     "HR Insights": "HR Insights",
     "Individual Employee Risk Analyzer": "Individual Employee Risk Analyzer",
+    "Report": "Report",
     "Attrition Data": "Attrition Data (Employees Who Left)",
     "Employees At Risk": "Employees At Risk",
 }
 
-# Handle programmatic navigation (from KPI "View Data" buttons, Employees At Risk row click)
-if "goto_section" in st.session_state and st.session_state.goto_section in nav_options:
+# Handle programmatic navigation (from KPI "View Data" buttons, Employees At Risk row click, Report button)
+valid_sections = nav_options
+if "goto_section" in st.session_state and st.session_state.goto_section in valid_sections:
     st.session_state["page"] = st.session_state.goto_section
     del st.session_state["goto_section"]
-elif "page" not in st.session_state or st.session_state.page not in nav_options:
+elif "page" not in st.session_state or st.session_state.page not in valid_sections:
     st.session_state["page"] = "Dashboard"
 
 st.sidebar.markdown("**Navigation**")
@@ -426,7 +725,7 @@ section = st.session_state["page"]
 st.session_state["current_section"] = section
 
 # Dynamic CSS for active nav item (highlight + bottom underline)
-active_idx = nav_options.index(section)
+active_idx = nav_options.index(section) if section in nav_options else 0
 st.sidebar.markdown(f"""
 <style>
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:nth-child({active_idx + 2}) button {{
@@ -514,30 +813,46 @@ elif section == "Train Model":
     st.markdown('<p class="section-title">🤖 Train Model</p>', unsafe_allow_html=True)
     
     if st.button("Train Model", type="primary"):
-        with st.spinner("Training Random Forest model..."):
+        with st.spinner("Training SVM and Random Forest models..."):
             try:
                 from model.train_model import train_and_save_model
                 data_path = str(project_root / "data" / "WA_Fn-UseC_-HR-Employee-Attrition.csv")
-                accuracy = train_and_save_model(data_path)
-                st.session_state["model_accuracy"] = accuracy
+                accuracies = train_and_save_model(data_path)
+                st.session_state["model_accuracies"] = accuracies
                 st.rerun()
             except Exception as e:
                 st.error(f"Training failed: {e}")
     
     artifacts = load_model_artifacts()
     if artifacts:
-        st.success("✅ Model is trained and ready for predictions.")
-        acc = st.session_state.get("model_accuracy")
-        if acc is None:
+        st.success("✅ Models are trained and ready for predictions.")
+        accuracies = st.session_state.get("model_accuracies")
+        if accuracies is None:
             X, y, _, _ = preprocess_data(df)
             from sklearn.model_selection import train_test_split
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-            y_pred = artifacts["model"].predict(X_test)
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.svm import SVC
             from sklearn.metrics import accuracy_score
-            acc = accuracy_score(y_test, y_pred)
-        st.metric("Model Accuracy", f"{acc:.2%}")
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+            rf_pred = artifacts["model"].predict(X_test)
+            rf_acc = accuracy_score(y_test, rf_pred)
+            scaler = StandardScaler()
+            X_train_s = scaler.fit_transform(X_train)
+            X_test_s = scaler.transform(X_test)
+            svm_model = SVC(kernel="rbf", C=1.0, random_state=42)
+            svm_model.fit(X_train_s, y_train)
+            svm_pred = svm_model.predict(X_test_s)
+            svm_acc = accuracy_score(y_test, svm_pred)
+            accuracies = {"rf": rf_acc, "svm": svm_acc}
+        rf_acc = accuracies["rf"]
+        svm_acc = accuracies["svm"]
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Random Forest Accuracy", f"{rf_acc:.2%}")
+        with col2:
+            st.metric("SVM Accuracy", f"{svm_acc:.2%}")
     else:
-        st.info("👆 Click 'Train Model' to train the Random Forest classifier.")
+        st.info("👆 Click 'Train Model' to train SVM and Random Forest classifiers.")
 
 # ============ SECTION: HR Insights ============
 elif section == "HR Insights":
@@ -727,6 +1042,7 @@ elif section == "Individual Employee Risk Analyzer":
         name_from_redirect = None
         if "analyze_employee" in st.session_state and st.session_state.analyze_employee:
             name_from_redirect = st.session_state.analyze_employee
+            st.session_state["analyzed_employee"] = name_from_redirect
             del st.session_state["analyze_employee"]
         
         # Get all employee names from dataset
@@ -762,7 +1078,11 @@ elif section == "Individual Employee Risk Analyzer":
         
         predict_btn = st.button("Predict Attrition Risk", key="predict_btn")
         
+        # Persist analyzed employee so it survives reruns (e.g. when clicking Report)
         employee_to_analyze = name_from_redirect or (selected_name if predict_btn else None)
+        if employee_to_analyze:
+            st.session_state["analyzed_employee"] = employee_to_analyze
+        employee_to_analyze = st.session_state.get("analyzed_employee") or employee_to_analyze
         if employee_to_analyze:
             model = artifacts["model"]
             # Get employee row from dataset
@@ -784,16 +1104,8 @@ elif section == "Individual Employee Risk Analyzer":
             risk_level, risk_pct = get_risk_level(proba)
             pred_class = model.predict(X_pred)[0]
             
-            form_data = {
-                "Age": age,
-                "Department": department,
-                "JobRole": job_role,
-                "MonthlyIncome": monthly_income,
-                "OverTime": overtime,
-                "JobSatisfaction": job_satisfaction,
-                "YearsAtCompany": years_at_company,
-                "WorkLifeBalance": work_life_balance,
-            }
+            # Build full emp_row dict for AI explanation (personalized per employee)
+            emp_row_dict = emp_row.to_dict()
             
             st.markdown("---")
             display_name = employee_to_analyze
@@ -820,13 +1132,70 @@ elif section == "Individual Employee Risk Analyzer":
                 st.metric("Attrition Risk %", f"{risk_pct:.1f}%")
             
             st.markdown("### AI Explanation")
-            explanation = generate_ai_explanation(form_data, risk_pct)
+            explanation = generate_ai_explanation(emp_row_dict, df, risk_pct)
             st.info(explanation)
             
             st.markdown("### HR Recommendations")
-            recommendations = generate_hr_recommendations(form_data, risk_pct)
+            recommendations = generate_hr_recommendations(emp_row_dict, risk_pct)
             for rec in recommendations:
                 st.markdown(f"- {rec}")
+            
+            # Report button - navigates to Report page in nav
+            st.markdown("---")
+            if st.button("Report", key="btn_full_report", type="primary"):
+                st.session_state["page"] = "Report"
+                st.session_state["report_employee"] = employee_to_analyze
+                st.rerun()
+
+# ============ SECTION: Report (in nav bar - details, charts, download) ============
+elif section == "Report":
+    st.markdown('<p class="section-title">📋 Employee HR Report</p>', unsafe_allow_html=True)
+    
+    if artifacts is None:
+        st.warning("Please train the model first (Train Model section).")
+    else:
+        report_employee = st.session_state.get("report_employee")
+        
+        # If report_employee is set (from Individual Risk Analyzer Report button): show report directly, no name prompt
+        if report_employee and report_employee in df["EmployeeName"].values:
+            st.caption(f"Report for **{report_employee}**")
+            emp_row = df[df["EmployeeName"] == report_employee].iloc[0]
+            display_name = report_employee
+            X_full, _, _, feature_columns = preprocess_data(df)
+            emp_idx = df[df["EmployeeName"] == report_employee].index[0]
+            proba = artifacts["model"].predict_proba(X_full.iloc[[emp_idx]][feature_columns])[0][1]
+            risk_level, risk_pct = get_risk_level(proba)
+            explanation = generate_ai_explanation(emp_row.to_dict(), df, risk_pct)
+            recommendations = generate_hr_recommendations(emp_row.to_dict(), risk_pct)
+            _render_report_content(emp_row, df, risk_pct, risk_level, explanation, recommendations, display_name)
+            if st.button("Select different employee", key="btn_change_report_emp"):
+                del st.session_state["report_employee"]
+                st.rerun()
+        else:
+            # No employee selected - show search/select (when user navigates to Report from sidebar directly)
+            st.caption("Select an employee to view their full report with charts and download option.")
+            all_names = df["EmployeeName"].tolist()
+            search_report = st.text_input(
+                "Type to search employee",
+                placeholder="e.g. anu, priya, kumar...",
+                key="report_search",
+                help="Search by name to select an employee for the report"
+            )
+            if search_report and search_report.strip():
+                filtered = [n for n in all_names if search_report.strip().lower() in n.lower()]
+            else:
+                filtered = all_names[:100]
+            options_report = filtered[:100] if filtered else all_names[:50]
+            selected_for_report = st.selectbox(
+                "Select employee",
+                options=options_report,
+                key="report_emp_select",
+                format_func=lambda x: x,
+            )
+            if st.button("View Report", key="btn_view_report", type="primary"):
+                if selected_for_report and options_report:
+                    st.session_state["report_employee"] = selected_for_report
+                    st.rerun()
 
 # ============ SECTION: Attrition Data (Employees Who Left) ============
 elif section == "Attrition Data":

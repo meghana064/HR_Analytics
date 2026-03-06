@@ -1,0 +1,12 @@
+{
+  "name": "AI Workforce Guardian",
+  "dataColors": ["#e50914", "#3b82f6", "#22c55e", "#fbbf24", "#94a3b8"],
+  "background": "#0f172a",
+  "foreground": "#f1f5f9",
+  "good": "#22c55e",
+  "neutral": "#fbbf24",
+  "bad": "#e50914",
+  "maximum": "#e50914",
+  "center": "#fbbf24",
+  "minimum": "#22c55e"
+}
